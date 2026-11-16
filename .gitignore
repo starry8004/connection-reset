@@ -1,0 +1,18 @@
+# ── 공통 제외 (auto) ──
+.env
+*.env
+!*.env.example
+.venv*/
+venv/
+node_modules/
+__pycache__/
+*.pyc
+.DS_Store
+*.zip
+*.log
+*.tar.gz
+*.mp3
+*.wav
+*.m4a
+*.mp4
+*.pickle
