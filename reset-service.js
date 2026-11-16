@@ -9,18 +9,23 @@ export function createResetService(api) {
       await api.setJob({ ...previous, status: 'interrupted',
         message: '이전 작업의 완료 여부를 확인할 수 없습니다. 사이트 상태를 먼저 확인하세요.' });
     }
+  }).catch(() => {
+    // A one-off storage failure at startup must not block every later request.
   });
 
   async function start({ tabId, origin, reload = false }) {
     if (busy) throw new Error('데이터 삭제가 진행 중입니다. 완료될 때까지 기다려 주세요.');
     busy = true;
     let job;
+    let removed = false;
     try {
       await ready;
       if (!Number.isInteger(tabId) || tabId < 0 || typeof origin !== 'string') {
         throw new Error('삭제할 탭을 확인할 수 없습니다. 확장을 다시 열어 주세요.');
       }
-      const tab = await api.getTab(tabId);
+      let tab;
+      try { tab = await api.getTab(tabId); }
+      catch { throw new Error('삭제할 탭을 확인할 수 없습니다. 탭이 닫혔다면 사이트를 다시 열고 확장을 실행하세요.'); }
       const target = webTarget(tab.url);
       if (!target || target.origin !== origin) {
         throw new Error('페이지 주소가 바뀌었습니다. 확장을 다시 열고 대상을 확인하세요.');
@@ -29,6 +34,7 @@ export function createResetService(api) {
       job = { tabId, origin, status: 'running', startedAt: Date.now(), message: '사이트 데이터를 삭제하고 있습니다…' };
       await api.setJob(job);
       await api.remove(request.options, request.data);
+      removed = true;
       let message = '사이트 데이터 삭제가 완료되었습니다.';
       if (reload) {
         try {
@@ -44,11 +50,14 @@ export function createResetService(api) {
         }
       }
       job = { ...job, status: 'done', completedAt: Date.now(), message };
-      await api.setJob(job);
+      // Deletion already succeeded; a failed status write must not turn it into an error.
+      try { await api.setJob(job); } catch {}
       return job;
     } catch (error) {
-      if (job) {
-        await api.setJob({ ...job, status: 'error', message: `삭제를 완료하지 못했습니다. 일부 데이터는 이미 삭제되었을 수 있습니다. ${error.message}` });
+      if (job && !removed) {
+        try {
+          await api.setJob({ ...job, status: 'error', message: `삭제를 완료하지 못했습니다. 일부 데이터는 이미 삭제되었을 수 있습니다. ${error.message}` });
+        } catch {}
       }
       throw error;
     } finally { busy = false; }

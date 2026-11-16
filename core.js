@@ -1,11 +1,62 @@
 export const RENEW_COMMAND = 'ipconfig /renew';
 
+// Punycode (RFC 3492) decoder so Korean domains display as typed (xn--… → 한국).
+function decodePunycode(input) {
+  const base = 36, tMin = 1, tMax = 26, skew = 38, damp = 700;
+  const output = [];
+  let i = 0, n = 128, bias = 72;
+  const basic = input.lastIndexOf('-');
+  for (let j = 0; j < Math.max(basic, 0); j++) output.push(input.charCodeAt(j));
+  const digit = c => c - 48 < 10 ? c - 22 : c - 65 < 26 ? c - 65 : c - 97 < 26 ? c - 97 : base;
+  for (let index = basic > 0 ? basic + 1 : 0; index < input.length;) {
+    const oldi = i;
+    for (let w = 1, k = base; ; k += base) {
+      if (index >= input.length) throw new RangeError('invalid punycode');
+      const d = digit(input.charCodeAt(index++));
+      if (d >= base) throw new RangeError('invalid punycode');
+      i += d * w;
+      const t = k <= bias ? tMin : k >= bias + tMax ? tMax : k - bias;
+      if (d < t) break;
+      w *= base - t;
+    }
+    const len = output.length + 1;
+    let delta = oldi === 0 ? Math.floor((i - oldi) / damp) : (i - oldi) >> 1;
+    delta += Math.floor(delta / len);
+    let k = 0;
+    for (; delta > ((base - tMin) * tMax) >> 1; k += base) delta = Math.floor(delta / (base - tMin));
+    bias = Math.floor(k + ((base - tMin + 1) * delta) / (delta + skew));
+    n += Math.floor(i / len);
+    i %= len;
+    output.splice(i++, 0, n);
+  }
+  return String.fromCodePoint(...output);
+}
+
+export function displayHostname(hostname) {
+  return hostname.split('.').map(label => {
+    if (!label.toLowerCase().startsWith('xn--')) return label;
+    try { return decodePunycode(label.slice(4)); } catch { return label; }
+  }).join('.');
+}
+
 export function webTarget(rawUrl) {
   try {
     const url = new URL(rawUrl);
     if (!['http:', 'https:'].includes(url.protocol)) return null;
-    return { origin: url.origin, hostname: url.hostname, url: url.href };
+    // Never show or copy credentials embedded in the address (user:pass@host).
+    url.username = '';
+    url.password = '';
+    const hostname = displayHostname(url.hostname);
+    const displayOrigin = `${url.protocol}//${hostname}${url.port ? `:${url.port}` : ''}`;
+    return { origin: url.origin, hostname, displayOrigin, url: url.href };
   } catch { return null; }
+}
+
+// A stored job belongs to this popup only if both the tab and the site match.
+export function jobForTarget(job, tabId, origin) {
+  if (!job) return undefined;
+  if (job.status === 'running') return job;
+  return job.tabId === tabId && job.origin === origin ? job : undefined;
 }
 
 export function removalRequest(rawUrl) {

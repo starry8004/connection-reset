@@ -1,4 +1,4 @@
-import { GUIDES, RENEW_COMMAND, webTarget } from './core.js';
+import { GUIDES, RENEW_COMMAND, jobForTarget, webTarget } from './core.js';
 
 const $ = id => document.getElementById(id);
 let tab;
@@ -14,7 +14,8 @@ function showStatus(message, state = 'done') {
 function updateJob(job) {
   busy = job?.status === 'running';
   $('clear-site').disabled = !target || busy;
-  if (job && (job.tabId === tab?.id || busy)) showStatus(job.message, job.status);
+  const relevant = jobForTarget(job, tab?.id, target?.origin);
+  if (relevant) showStatus(relevant.message, relevant.status);
 }
 async function initialize() {
   if (!globalThis.chrome?.runtime?.id) {
@@ -23,20 +24,24 @@ async function initialize() {
     return;
   }
   try {
-    const [tabs, state] = await Promise.all([
-      chrome.tabs.query({ active: true, currentWindow: true }),
-      chrome.runtime.sendMessage({ type: 'GET_STATE' })
-    ]);
-    if (!state?.ok) throw new Error('작업 상태 확인 실패');
-    tab = tabs[0];
+    [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     target = webTarget(tab?.url);
     $('site-name').textContent = target?.hostname ?? '일반 웹사이트에서 열어 주세요';
-    $('site-name').title = target?.origin ?? 'chrome:// 페이지, 새 탭, 파일에서는 사이트 작업을 지원하지 않습니다.';
+    $('site-name').title = target?.displayOrigin ?? 'chrome:// 페이지, 새 탭, 파일에서는 사이트 작업을 지원하지 않습니다.';
     $('reload-page').disabled = !target;
-    updateJob(state.job);
   } catch {
     $('site-name').textContent = '현재 탭을 확인할 수 없습니다';
     showStatus('확장을 닫고 웹사이트에서 다시 열어 주세요.', 'error');
+    return;
+  }
+  // Job state is separate: if it fails, copy and reload still work.
+  try {
+    const state = await chrome.runtime.sendMessage({ type: 'GET_STATE' });
+    if (!state?.ok) throw new Error('작업 상태 확인 실패');
+    updateJob(state.job);
+  } catch {
+    updateJob(undefined);
+    showStatus('이전 작업 상태를 불러오지 못했습니다. 다른 기능은 그대로 사용할 수 있습니다.', 'error');
   }
 }
 
@@ -46,7 +51,7 @@ document.querySelectorAll('[data-close]').forEach(button => {
 
 $('clear-site').addEventListener('click', () => {
   if (!target || busy) return;
-  $('clear-origin').textContent = target.origin;
+  $('clear-origin').textContent = target.displayOrigin;
   $('clear-error').hidden = true;
   $('clear-dialog').showModal();
   // Focus the non-destructive option before the user explicitly confirms.

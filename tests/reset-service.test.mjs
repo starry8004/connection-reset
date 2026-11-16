@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { webTarget, removalRequest, GUIDES } from '../core.js';
+import { webTarget, removalRequest, GUIDES, jobForTarget, displayHostname } from '../core.js';
 import { createResetService } from '../reset-service.js';
 
 function fixture(overrides = {}) {
@@ -105,4 +105,49 @@ test('marks a stale job interrupted instead of silently repeating deletion', asy
 test('the Windows guide copies only the requested DHCP command', () => {
   assert.equal(GUIDES.renew.command, 'ipconfig /renew');
   assert.match(GUIDES.renew.note, /공인 IP 변경을 보장하지/);
+});
+test('copied address never contains embedded credentials', () => {
+  const t = webTarget('https://user:secret@intranet.example.com/a?b=1#c');
+  assert.equal(t.url, 'https://intranet.example.com/a?b=1#c');
+  assert.doesNotMatch(t.url, /secret|user/);
+  assert.equal(t.origin, 'https://intranet.example.com');
+});
+test('Korean domains are shown in Hangul, not punycode', () => {
+  assert.equal(displayHostname('xn--3e0b707e.kr'), '한국.kr');
+  assert.equal(webTarget('https://한국.kr/').hostname, '한국.kr');
+  assert.equal(webTarget('https://www.한국.kr:8443/').displayOrigin, 'https://www.한국.kr:8443');
+  assert.equal(webTarget('https://xn--3e0b707e.kr/').origin, 'https://xn--3e0b707e.kr');
+  assert.equal(displayHostname('xn--zz.example.com'), 'xn--zz.example.com');
+});
+test('a finished job is shown only for the same tab and the same site', () => {
+  const job = { tabId: 11, origin: 'https://a.com', status: 'done', message: 'ok' };
+  assert.equal(jobForTarget(job, 11, 'https://a.com'), job);
+  assert.equal(jobForTarget(job, 11, 'https://b.com'), undefined);
+  assert.equal(jobForTarget(job, 12, 'https://a.com'), undefined);
+  assert.equal(jobForTarget({ ...job, status: 'running' }, 12, 'https://b.com')?.status, 'running');
+  assert.equal(jobForTarget(undefined, 11, 'https://a.com'), undefined);
+});
+test('a storage failure at startup does not block later requests', async () => {
+  const f = fixture({ getJob: async () => { throw new Error('storage down'); } });
+  await f.service.ready;
+  assert.equal((await f.service.start(payload)).status, 'done');
+});
+test('a closed tab produces a Korean message, not the raw Chrome error', async () => {
+  const f = fixture({ getTab: async () => { throw new Error('No tab with id: 11.'); } });
+  await assert.rejects(f.service.start(payload), /삭제할 탭을 확인할 수 없습니다/);
+  assert.equal(f.calls.length, 0);
+});
+test('completed deletion stays successful when the final status write fails', async () => {
+  let writes = 0;
+  const f = fixture({ setJob: async () => { if (++writes > 1) throw new Error('quota'); } });
+  const result = await f.service.start(payload);
+  assert.equal(result.status, 'done');
+});
+test('a failed error-status write does not hide the original error', async () => {
+  let writes = 0;
+  const f = fixture({
+    setJob: async () => { if (++writes > 1) throw new Error('quota'); },
+    remove: async () => { throw new Error('API denied'); }
+  });
+  await assert.rejects(f.service.start(payload), /API denied/);
 });
